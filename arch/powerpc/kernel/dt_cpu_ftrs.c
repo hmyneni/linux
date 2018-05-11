@@ -758,6 +758,7 @@ static __init void update_tlbie_feature_flag(unsigned long pvr)
 		}
 
 		cur_cpu_spec->cpu_features |= CPU_FTR_P9_TLBIE_AI_BUG;
+		cur_cpu_spec->cpu_features |= CPU_FTR_P9_TIDR;
 	}
 }
 
