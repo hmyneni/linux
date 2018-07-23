@@ -828,7 +828,11 @@ void vas_init_rx_win_attr(struct vas_rx_win_attr *rxattr, enum vas_cop_type cop)
 {
 	memset(rxattr, 0, sizeof(*rxattr));
 
-	if (cop == VAS_COP_TYPE_842 || cop == VAS_COP_TYPE_842_HIPRI) {
+	switch (cop) {
+	case VAS_COP_TYPE_842:
+	case VAS_COP_TYPE_842_HIPRI:
+	case VAS_COP_TYPE_GZIP:
+	case VAS_COP_TYPE_GZIP_HIPRI:
 		rxattr->pin_win = true;
 		rxattr->nx_win = true;
 		rxattr->fault_win = false;
@@ -837,7 +841,8 @@ void vas_init_rx_win_attr(struct vas_rx_win_attr *rxattr, enum vas_cop_type cop)
 		rxattr->tx_wcred_mode = true;
 		rxattr->rx_win_ord_mode = true;
 		rxattr->tx_win_ord_mode = true;
-	} else if (cop == VAS_COP_TYPE_FAULT) {
+		break;
+	case VAS_COP_TYPE_FAULT:
 		rxattr->pin_win = true;
 		rxattr->fault_win = true;
 		rxattr->notify_disable = true;
@@ -845,7 +850,8 @@ void vas_init_rx_win_attr(struct vas_rx_win_attr *rxattr, enum vas_cop_type cop)
 		rxattr->tx_wcred_mode = true;
 		rxattr->rx_win_ord_mode = true;
 		rxattr->tx_win_ord_mode = true;
-	} else if (cop == VAS_COP_TYPE_FTW) {
+		break;
+	case VAS_COP_TYPE_FTW:
 		rxattr->user_win = true;
 		rxattr->intr_disable = true;
 
@@ -855,6 +861,9 @@ void vas_init_rx_win_attr(struct vas_rx_win_attr *rxattr, enum vas_cop_type cop)
 		 * implement a mechanism to return the user credits or new
 		 * paste operations will fail.
 		 */
+		break;
+	case VAS_COP_TYPE_MAX:
+		break;
 	}
 }
 EXPORT_SYMBOL_GPL(vas_init_rx_win_attr);
@@ -905,14 +914,22 @@ void vas_init_tx_win_attr(struct vas_tx_win_attr *txattr, enum vas_cop_type cop)
 {
 	memset(txattr, 0, sizeof(*txattr));
 
-	if (cop == VAS_COP_TYPE_842 || cop == VAS_COP_TYPE_842_HIPRI) {
+	switch(cop) {
+	case VAS_COP_TYPE_842_HIPRI:
+	case VAS_COP_TYPE_842:
+	case VAS_COP_TYPE_GZIP:
+	case VAS_COP_TYPE_GZIP_HIPRI:
 		txattr->rej_no_credit = false;
 		txattr->rx_wcred_mode = true;
 		txattr->tx_wcred_mode = true;
 		txattr->rx_win_ord_mode = true;
 		txattr->tx_win_ord_mode = true;
-	} else if (cop == VAS_COP_TYPE_FTW) {
+		break;
+	case VAS_COP_TYPE_FTW:
 		txattr->user_win = true;
+		break;
+	default:
+		break;
 	}
 }
 EXPORT_SYMBOL_GPL(vas_init_tx_win_attr);
@@ -982,9 +999,13 @@ static bool tx_win_args_valid(enum vas_cop_type cop,
 	if (attr->wcreds_max > VAS_TX_WCREDS_MAX)
 		return false;
 
-	if (attr->user_win &&
-			(cop != VAS_COP_TYPE_FTW || attr->rsvd_txbuf_count))
-		return false;
+	if (attr->user_win) {
+		if (attr->rsvd_txbuf_count)
+			return false;
+
+		if (cop != VAS_COP_TYPE_FTW && cop != VAS_COP_TYPE_GZIP)
+			return false;
+	}
 
 	return true;
 }
@@ -1284,13 +1305,13 @@ int vas_win_close(struct vas_window *window)
 
 	unmap_paste_region(window);
 
-	clear_vinst_win(window);
-
 	poll_window_busy_state(window);
 
 	unpin_close_window(window);
 
 	poll_window_credits(window);
+
+	clear_vinst_win(window);
 
 	poll_window_castout(window);
 
