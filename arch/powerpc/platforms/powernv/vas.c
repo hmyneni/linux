@@ -72,6 +72,7 @@ static int init_vas_instance(struct platform_device *pdev)
 	}
 
 	vinst->paste_win_id_shift = 63 - res->end;
+	init_waitqueue_head(&vinst->fault_wq);
 
 	pr_devel("Initialized instance [%s, %d], paste_base 0x%llx, "
 			"paste_win_id_shift 0x%llx\n", pdev->name, vasid,
@@ -104,6 +105,8 @@ static int init_vas_instance(struct platform_device *pdev)
 		pr_devel("%s(): Error %d in fault window\n", __func__, rc);
 		goto free_irq_mapping;
 	}
+
+	vas_setup_fault_handler(vinst);
 
 	dev_set_drvdata(&pdev->dev, vinst);
 
