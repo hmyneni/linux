@@ -82,6 +82,17 @@ static int init_vas_instance(struct platform_device *pdev)
 			per_cpu(cpu_vas_id, cpu) = vasid;
 	}
 
+	rc = vas_setup_irq_mapping(vinst);
+	if (rc) {
+		/*
+		 * IRQ mapping is essential for user space send windows.
+		 * Check vinst->hwirq and returns -ENODEV in tx_win_open
+		 * for user space windows.
+		 */
+		pr_err("VAS[%d]: Setup IRQ failed with %d\n", vinst->vas_id,
+			rc);
+	}
+
 	mutex_lock(&vas_mutex);
 	list_add(&vinst->node, &vas_instances);
 	mutex_unlock(&vas_mutex);
@@ -91,12 +102,15 @@ static int init_vas_instance(struct platform_device *pdev)
 	rc = vas_setup_fault_window(vinst);
 	if (rc) {
 		pr_devel("%s(): Error %d in fault window\n", __func__, rc);
-		goto free_vinst;
+		goto free_irq_mapping;
 	}
 
 	dev_set_drvdata(&pdev->dev, vinst);
 
 	return 0;
+
+free_irq_mapping:
+	vas_free_irq_mapping(vinst);
 
 free_vinst:
 	kfree(vinst);
