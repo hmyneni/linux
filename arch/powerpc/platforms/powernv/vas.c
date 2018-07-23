@@ -88,6 +88,12 @@ static int init_vas_instance(struct platform_device *pdev)
 
 	vas_instance_init_dbgdir(vinst);
 
+	rc = vas_setup_fault_window(vinst);
+	if (rc) {
+		pr_devel("%s(): Error %d in fault window\n", __func__, rc);
+		goto free_vinst;
+	}
+
 	dev_set_drvdata(&pdev->dev, vinst);
 
 	return 0;
