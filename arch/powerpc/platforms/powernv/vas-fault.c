@@ -16,6 +16,8 @@
 #include <linux/kthread.h>
 #include <linux/irqdomain.h>
 #include <linux/interrupt.h>
+#include <linux/sched/signal.h>
+#include <linux/mmu_context.h>
 #include <asm/icswx.h>
 #include <asm/opal-api.h>
 #include <asm/opal.h>
@@ -28,12 +30,295 @@
 #define VAS_FAULT_WIN_FIFO_SIZE		(64 << 10)
 #define VAS_FAULT_WIN_WCREDS		64
 
+struct task_struct *fault_handler;
+
+void vas_wakeup_fault_handler(int virq, void *arg)
+{
+	struct vas_instance *vinst = arg;
+
+	atomic_inc(&vinst->pending_crbs);
+
+	atomic_inc(&vinst->pending_faults);
+
+	wake_up(&vinst->fault_wq);
+}
+
+static void dump_crb(struct coprocessor_request_block *crb)
+{
+	struct data_descriptor_entry *dde;
+	struct nx_fault_stamp *nx;
+
+	/* TODO Convert to CPU format before print? */
+
+	dde = &crb->source;
+	pr_devel("SrcDDE: addr 0x%llx, len %d, count %d, idx %d, flags %d\n",
+			be64_to_cpu(dde->address), be32_to_cpu(dde->length),
+			dde->count, dde->index, dde->flags);
+
+	dde = &crb->target;
+	pr_devel("TgtDDE: addr 0x%llx, len %d, count %d, idx %d, flags %d\n",
+			be64_to_cpu(dde->address), be32_to_cpu(dde->length),
+			dde->count, dde->index, dde->flags);
+
+	nx = &crb->stamp.nx;
+	pr_devel("NX Stamp: PSWID 0x%x, FSA 0x%llx, flags 0x%x, FS 0x%x\n",
+			be32_to_cpu(nx->pswid), crb_nx_fault_addr(crb),
+			nx->flags, be32_to_cpu(nx->fault_status));
+}
+
+/*
+ * Check if the fault occurred in the CSB itself. Return true if so, false
+ * otherwise.
+ */
+static bool fault_in_csb(struct coprocessor_request_block *crb)
+{
+	u64 fault_addr, csb_start, csb_end;
+
+	fault_addr = crb_nx_fault_addr(crb);
+	csb_start = crb_csb_addr(crb);
+	csb_end = csb_start + sizeof(struct coprocessor_status_block);
+
+	if (fault_addr >= csb_start && fault_addr < csb_end) {
+		pr_err("CSB Fault: csb start/end 0x%llx/0x%llx, addr 0x%llx\n",
+				csb_start, csb_end, fault_addr);
+		return true;
+	}
+
+	return false;
+}
+
+static void notify_process(pid_t pid, u64 fault_addr)
+{
+	int rc;
+	struct siginfo info;
+
+	memset(&info, 0, sizeof(info));
+
+	info.si_signo = SIGSEGV;
+	info.si_errno = 0;	/* TODO */
+	info.si_code = 0;	/* TODO */
+
+	info.si_addr = (void *)fault_addr;
+
+	rcu_read_lock();
+	rc = kill_pid_info(SIGSEGV, &info, find_vpid(pid));
+	rcu_read_unlock();
+
+	pr_devel("%s(): pid %d kill_proc_info() rc %d\n", __func__, pid, rc);
+}
+
+/*
+ * Update the CSB to indicate a translation error.
+ *
+ * If the fault is in the CSB address itself or if we are unable to
+ * update the CSB, send a signal to the process, because we have no
+ * other way of notifying the user process.
+ *
+ * Remaining settings in the CSB are based on wait_for_csb() of
+ * NX-GZIP.
+ */
+static void update_csb(int pid, struct coprocessor_request_block *crb)
+{
+	int rc;
+	void __user *csb_addr;
+	struct task_struct *tsk;
+	struct coprocessor_status_block csb;
+
+	if (fault_in_csb(crb))
+		goto notify;
+
+	csb_addr = (void *)__be64_to_cpu(crb->csb_addr);
+
+	csb.cc = CSB_CC_TRANSLATION;
+	csb.ce = CSB_CE_TERMINATION;
+	csb.cs = 0;
+	csb.count = 0;
+
+	/*
+	 * Returns the fault address in CPU format since it is passed with
+	 * signal. But is the user space expects BE format, need changes.
+	 * i.e either kernel (here) or user should convert to CPU format.
+	 * Not both!
+	 */
+	csb.address = crb_nx_fault_addr(crb);
+	csb.flags = CSB_V;
+
+	rcu_read_lock();
+	tsk = find_task_by_vpid(pid);
+	if (!tsk) {
+		/*
+		 * vas_win_close() waits for any pending CRBs and pending
+		 * send window credits. In case of this fault CRB, the send
+		 * credit is not yet returned. So we should NOT end up with a
+		 * non-existent task for this fault CRB.
+		 */
+		WARN_ON_ONCE(!tsk);
+		rcu_read_unlock();
+		return;
+	}
+
+	if (tsk->flags & PF_EXITING) {
+		rcu_read_unlock();
+		return;
+	}
+
+	get_task_struct(tsk);
+	rcu_read_unlock();
+
+	use_mm(tsk->mm);
+
+	rc = copy_to_user(csb_addr, &csb, sizeof(csb));
+
+	unuse_mm(tsk->mm);
+	put_task_struct(tsk);
+
+	if (rc) {
+		pr_err("CSB: Error updating CSB address 0x%p signalling\n",
+				csb_addr);
+		goto notify;
+	}
+
+	return;
+
+notify:
+	notify_process(pid, crb_nx_fault_addr(crb));
+}
+
+static void dump_fifo(struct vas_instance *vinst)
+{
+	int i;
+	unsigned long *fifo = vinst->fault_fifo;
+
+	pr_err("Fault fifo size %d, max crbs %d, crb size %lu\n",
+			vinst->fault_fifo_size,
+			vinst->fault_fifo_size / CRB_SIZE,
+			sizeof(struct coprocessor_request_block));
+
+	pr_err("Fault FIFO Dump:\n");
+	for (i = 0; i < 64; i+=4, fifo+=4) {
+		pr_err("[%.3d, %p]: 0x%.16lx 0x%.16lx 0x%.16lx 0x%.16lx\n",
+			i, fifo, *fifo, *(fifo+1), *(fifo+2), *(fifo+3));
+	}
+}
+
+/*
+ * Process a CRB that we receive on the fault window.
+ */
+static void process_fault_crb(struct vas_instance *vinst)
+{
+	void *fifo;
+	struct vas_window *window;
+	struct coprocessor_request_block buf;
+	struct coprocessor_request_block *crb;
+
+	if (!atomic_read(&vinst->pending_crbs))
+		return;
+
+	crb = &buf;
+
+	/*
+	 * Advance the fault fifo pointer to next CRB.
+	 * Use CRB_SIZE rather than sizeof(*crb) since the latter is
+	 * aligned to CRB_ALIGN (256) but the CRB written to by VAS is
+	 * only CRB_SIZE in len.
+	 */
+	fifo = vinst->fault_fifo + atomic_read(&vinst->fault_crbs) * CRB_SIZE;
+
+	pr_devel("VAS[%d] fault_fifo %p, fifo %p, faults %d pending %d\n",
+			vinst->vas_id, vinst->fault_fifo, fifo,
+			atomic_read(&vinst->fault_crbs),
+			atomic_read(&vinst->pending_faults));
+
+	memcpy(crb, fifo, CRB_SIZE);
+	memset(fifo, 0, CRB_SIZE);
+
+	/*
+	 * TODO: If we see any race issues, may usse a mutex instead of
+	 * atomic here, since we have to wrap the fault_crbs back to 0.
+	 */
+	atomic_inc(&vinst->fault_crbs);
+	if (atomic_read(&vinst->fault_crbs) == vinst->fault_fifo_size/CRB_SIZE)
+		atomic_set(&vinst->fault_crbs, 0);
+
+	atomic_dec(&vinst->pending_crbs);
+	atomic_dec(&vinst->pending_faults);
+
+	dump_crb(crb);
+
+	window = vas_pswid_to_window(vinst, crb_nx_pswid(crb));
+
+	if (IS_ERR(window)) {
+		/*
+		 * What now? We got an interrupt about a specific send
+		 * window but we can't find that window and we can't
+		 * even clean it up (return credit).
+		 * But we should not get here.
+		 */
+		dump_fifo(vinst);
+		pr_err("VAS[%d] fault_fifo %p, fifo %p, pswid 0x%x faults %d, "
+				"pending %d bad CRB?\n", vinst->vas_id,
+				vinst->fault_fifo, fifo, crb_nx_pswid(crb),
+				atomic_read(&vinst->fault_crbs),
+				atomic_read(&vinst->pending_faults));
+
+		WARN_ON_ONCE(1);
+		return;
+	}
+
+	update_csb(vas_window_pid(window), crb);
+
+	vas_return_credit(window, true);
+
+	return;
+}
+
+/*
+ * VAS Fault handler thread. One thread for all instances of VAS.
+ *
+ * Process CRBs posted on any instance of VAS.
+ */
+static int fault_handler_func(void *arg)
+{
+	struct vas_instance *vinst = (struct vas_instance *)arg;
+
+	do {
+		if (signal_pending(current))
+			flush_signals(current);
+
+		wait_event_interruptible(vinst->fault_wq,
+				atomic_read(&vinst->pending_faults) ||
+				kthread_should_stop());
+
+		if (kthread_should_stop())
+			break;
+
+		process_fault_crb(vinst);
+
+	} while (!kthread_should_stop());
+
+	return 0;
+}
+
+/*
+ * Create a thread that processes the fault CRBs.
+ */
+int vas_setup_fault_handler(struct vas_instance *vinst)
+{
+	vinst->fault_handler = kthread_run(fault_handler_func, (void *)vinst,
+			"vas-fault-%u", vinst->vas_id);
+
+	if (IS_ERR(vinst->fault_handler))
+		return PTR_ERR(vinst->fault_handler);
+
+	return 0;
+}
 
 static irqreturn_t vas_irq_handler(int virq, void *data)
 {
 	struct vas_instance *vinst = data;
 
 	pr_devel("VAS %d: virq %d\n", vinst->vas_id, virq);
+	vas_wakeup_fault_handler(virq, data);
 
 	return IRQ_HANDLED;
 }
@@ -182,5 +467,10 @@ int vas_cleanup_fault_window(struct vas_instance *vinst)
 	vinst->fault_fifo = NULL;
 
 	return rc;
+}
+
+void vas_cleanup_fault_handler(struct vas_instance *vinst)
+{
+	kthread_stop(vinst->fault_handler);
 }
 #endif
