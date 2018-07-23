@@ -1142,6 +1142,7 @@ static void poll_window_credits(struct vas_window *window)
 {
 	u64 val;
 	int creds, mode;
+	int count = 0;
 
 	val = read_hvwc_reg(window, VREG(WINCTL));
 	if (window->tx_win)
@@ -1164,6 +1165,17 @@ retry:
 		val = 0;
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout(msecs_to_jiffies(10));
+		count++;
+		/*
+		 * Process can not close send window until credits are
+		 * returned. So display message on the console to let
+		 * users aware of it in case if the process can not be
+		 * killed immediately.
+		 */
+		if (!(count % 10000))
+			pr_err("%s() pid %d stuck? retries %d\n", __func__,
+				window->pid, count);
+
 		goto retry;
 	}
 }
@@ -1177,6 +1189,7 @@ static void poll_window_busy_state(struct vas_window *window)
 {
 	int busy;
 	u64 val;
+	int count = 0;
 
 retry:
 	val = read_hvwc_reg(window, VREG(WIN_STATUS));
@@ -1185,6 +1198,16 @@ retry:
 		val = 0;
 		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout(msecs_to_jiffies(5));
+		/*
+		 * Process can not close send window until all requests
+		 * are completed. Display a message on the console
+		 * so that user is aware of it in case if the process
+		 * can not be killed immediately.
+		 */
+		if (!(count % 10000))
+			pr_err("%s() pid %d stuck? retries %d\n", __func__,
+				window->pid, count);
+
 		goto retry;
 	}
 }
