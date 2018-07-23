@@ -35,8 +35,8 @@ config CRYPTO_DEV_NX_COMPRESS_PSERIES
 	  algorithm.  This supports NX hardware on the pSeries platform.
 	  If you choose 'M' here, this module will be called nx_compress_pseries.
 
-config CRYPTO_DEV_NX_COMPRESS_POWERNV
-	tristate "Compression acceleration support on PowerNV platform"
+config CRYPTO_DEV_NX_842_COMPRESS_POWERNV
+	tristate "842 Compression acceleration support on PowerNV platform"
 	depends on PPC_POWERNV
 	depends on PPC_VAS
 	default y
@@ -45,5 +45,16 @@ config CRYPTO_DEV_NX_COMPRESS_POWERNV
 	  module supports acceleration for compressing memory with the 842
 	  algorithm.  This supports NX hardware on the PowerNV platform.
 	  If you choose 'M' here, this module will be called nx_compress_powernv.
+
+config CRYPTO_DEV_NX_GZIP_COMPRESS_POWERNV
+	tristate "Compression acceleration support on PowerNV platform"
+	depends on PPC_POWERNV
+	depends on PPC_VAS
+	default y
+	help
+	  Support for enbaling PowerPC Nest (NX) GZIP compression acceleration.
+	  This module enables NX GZIP and provides interfaces to user space
+	  for using NX GZIP compression requests. It does not provide HW
+	  compression in kernel right now.
 
 endif
