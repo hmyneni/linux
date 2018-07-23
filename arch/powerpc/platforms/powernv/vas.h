@@ -321,6 +321,12 @@ struct vas_instance {
 	int hwirq;
 	int fault_fifo_size;
 	void *fault_fifo;
+	atomic_t pending_crbs;
+	atomic_t fault_crbs;
+	atomic_t pending_faults;
+
+	wait_queue_head_t fault_wq;
+	struct task_struct *fault_handler;
 	struct vas_window *fault_win; /* Fault window */
 
 	struct mutex mutex;
@@ -420,6 +426,17 @@ extern int vas_setup_fault_window(struct vas_instance *vinst);
 extern int vas_cleanup_fault_window(struct vas_instance *vinst);
 extern int vas_setup_irq_mapping(struct vas_instance *vinst);
 extern void vas_free_irq_mapping(struct vas_instance *vinst);
+
+extern void vas_return_credit(struct vas_window *window, bool tx);
+extern int vas_setup_fault_handler(struct vas_instance *vinst);
+extern void vas_cleanup_fault_handler(struct vas_instance *vinst);
+extern struct vas_window *vas_pswid_to_window(struct vas_instance *vinst,
+			uint32_t pswid);
+
+static inline int vas_window_pid(struct vas_window *window)
+{
+	return window->pid;
+}
 
 static inline void vas_log_write(struct vas_window *win, char *name,
 			void *regptr, u64 val)
