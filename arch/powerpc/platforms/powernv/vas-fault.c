@@ -14,7 +14,11 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/kthread.h>
+#include <linux/irqdomain.h>
+#include <linux/interrupt.h>
 #include <asm/icswx.h>
+#include <asm/opal-api.h>
+#include <asm/opal.h>
 
 #include "vas.h"
 
@@ -24,6 +28,76 @@
 #define VAS_FAULT_WIN_FIFO_SIZE		(64 << 10)
 #define VAS_FAULT_WIN_WCREDS		64
 
+
+static irqreturn_t vas_irq_handler(int virq, void *data)
+{
+	struct vas_instance *vinst = data;
+
+	pr_devel("VAS %d: virq %d\n", vinst->vas_id, virq);
+
+	return IRQ_HANDLED;
+}
+
+int vas_setup_irq_mapping(struct vas_instance *vinst)
+{
+	int rc;
+	uint32_t virq;
+	int32_t girq_be, girq;
+	uint64_t port_be, port;
+	char devname[64];
+
+	if (!opal_check_token(OPAL_VAS_GET_TRIGGER_PORT))
+		return -ENODEV;
+
+	snprintf(devname, sizeof(devname), "vas-inst-%d", vinst->vas_id);
+
+	girq = 0;
+	port = 0ULL;
+	rc = opal_vas_get_trigger_port(vinst->vas_id, &girq_be, &port_be);
+	if (rc)
+		return -EINVAL;
+
+	pr_devel("IRQ trigger %d, port 0x%llx, rc %d\n", girq, port, rc);
+	girq = be32_to_cpu(girq_be);
+	port = be64_to_cpu(port_be);
+
+	virq = irq_create_mapping(NULL, girq);
+	if (!virq) {
+		pr_err("Inst%d: Unable to map global irq %d\n",
+			vinst->vas_id, girq);
+		return -EINVAL;
+	}
+
+	rc = request_irq(virq, vas_irq_handler, 0, devname, vinst);
+	if (rc) {
+		pr_err("Inst#%d: request_irq() returns %d\n",
+			vinst->vas_id, rc);
+		return rc;
+	}
+
+	vinst->hwirq = girq;
+	vinst->irq_port = port;
+
+	return 0;
+}
+
+void vas_free_irq_mapping(struct vas_instance *vinst)
+{
+	unsigned int irq;
+
+	if (!vinst->hwirq)
+		return;
+
+	irq = irq_find_mapping(NULL, vinst->hwirq);
+	if (!irq) {
+		pr_err("Receieved unknown hwirq %d\n", vinst->hwirq);
+		WARN_ON_ONCE(true);
+		return;
+	}
+
+	free_irq(irq, vinst);
+	vinst->hwirq = 0;
+}
 
 /*
  * Fault window is opened per VAS instance. NX use FIFO in this window

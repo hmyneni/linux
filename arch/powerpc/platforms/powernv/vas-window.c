@@ -762,6 +762,7 @@ static void init_winctx_for_rxwin(struct vas_window *rxwin,
 
 	winctx->min_scope = VAS_SCOPE_LOCAL;
 	winctx->max_scope = VAS_SCOPE_VECTORED_GROUP;
+	winctx->irq_port = rxwin->vinst->irq_port;
 }
 
 static bool rx_win_args_valid(enum vas_cop_type cop,
@@ -964,6 +965,7 @@ static void init_winctx_for_txwin(struct vas_window *txwin,
 	winctx->tc_mode = txattr->tc_mode;
 	winctx->min_scope = VAS_SCOPE_LOCAL;
 	winctx->max_scope = VAS_SCOPE_VECTORED_GROUP;
+	winctx->irq_port = txwin->vinst->irq_port;
 
 	winctx->pswid = txattr->pswid ? txattr->pswid: vas_win_id(txwin);
 }
@@ -1054,6 +1056,15 @@ struct vas_window *vas_tx_win_open(int vasid, enum vas_cop_type cop,
 			goto free_window;
 		}
 	} else {
+		/*
+		 * Interrupt hanlder setup failed. Means NX can not generate
+		 * fault for page fault. So not opening tx window.
+		 */
+		if (!vinst->hwirq) {
+			rc = -ENODEV;
+			goto free_window;
+		}
+
 		/*
 		 * A user mapping must ensure that context switch issues
 		 * CP_ABORT for this thread.
