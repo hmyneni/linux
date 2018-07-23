@@ -317,6 +317,8 @@ struct vas_instance {
 	u64 paste_base_addr;
 	u64 paste_win_id_shift;
 
+	u64 irq_port;
+	int hwirq;
 	int fault_fifo_size;
 	void *fault_fifo;
 	struct vas_window *fault_win; /* Fault window */
@@ -416,6 +418,8 @@ extern void vas_window_init_dbgdir(struct vas_window *win);
 extern void vas_window_free_dbgdir(struct vas_window *win);
 extern int vas_setup_fault_window(struct vas_instance *vinst);
 extern int vas_cleanup_fault_window(struct vas_instance *vinst);
+extern int vas_setup_irq_mapping(struct vas_instance *vinst);
+extern void vas_free_irq_mapping(struct vas_instance *vinst);
 
 static inline void vas_log_write(struct vas_window *win, char *name,
 			void *regptr, u64 val)
