@@ -145,8 +145,11 @@ static int nx_ioc_gzip_tx_win_open(struct file *fp, unsigned long arg)
 	struct nxgzip_instance *nxti = fp->private_data;
 	struct mm_struct *mm = current->mm;
 
-	if (!mm)
+	if (!mm || !nxti)
 		return -EINVAL;
+
+	if (nxti->txwin)
+		return -EEXIST;
 
 	rc = copy_from_user(&uattr, uptr, sizeof(uattr));
 	if (rc) {
@@ -202,7 +205,7 @@ static int nxgzip_release(struct inode *inode, struct file *fp)
 
 	instance = fp->private_data;
 
-	if (instance->txwin) {
+	if (instance && instance->txwin) {
 		vas_win_close(instance->txwin);
 		instance->txwin = NULL;
 
