@@ -350,6 +350,7 @@ struct vas_window {
 	void *hvwc_map;		/* HV window context */
 	void *uwc_map;		/* OS/User window context */
 	pid_t pid;		/* Linux process id of owner */
+	pid_t tgid;		/* Thread group ID of owner */
 	int wcreds_max;		/* Window credits */
 
 	char *dbgname;
@@ -436,6 +437,11 @@ extern struct vas_window *vas_pswid_to_window(struct vas_instance *vinst,
 static inline int vas_window_pid(struct vas_window *window)
 {
 	return window->pid;
+}
+
+static inline int vas_window_tgid(struct vas_window *window)
+{
+	return window->tgid;
 }
 
 static inline void vas_log_write(struct vas_window *win, char *name,
