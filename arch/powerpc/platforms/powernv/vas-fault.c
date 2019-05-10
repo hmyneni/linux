@@ -117,12 +117,14 @@ static void notify_process(pid_t pid, u64 fault_addr)
  * Remaining settings in the CSB are based on wait_for_csb() of
  * NX-GZIP.
  */
-static void update_csb(int pid, struct coprocessor_request_block *crb)
+static void update_csb(struct vas_window *window,
+			struct coprocessor_request_block *crb)
 {
 	int rc;
 	void __user *csb_addr;
 	struct task_struct *tsk;
 	struct coprocessor_status_block csb;
+	pid_t pid = vas_window_pid(window);
 
 	if (fault_in_csb(crb))
 		goto notify;
@@ -145,6 +147,14 @@ static void update_csb(int pid, struct coprocessor_request_block *crb)
 
 	rcu_read_lock();
 	tsk = find_task_by_vpid(pid);
+
+	/*
+	 * Thread may not exists, but does not close FD (means send window)
+	 * upon exit. Expects parent (tgid) to use and close the window.
+	 */
+	if (!tsk && window->user_win)
+		tsk = find_task_by_vpid(vas_window_tgid(window));
+
 	if (!tsk) {
 		/*
 		 * vas_win_close() waits for any pending CRBs and pending
@@ -265,7 +275,7 @@ static void process_fault_crb(struct vas_instance *vinst)
 		return;
 	}
 
-	update_csb(vas_window_pid(window), crb);
+	update_csb(window, crb);
 
 	vas_return_credit(window, true);
 
