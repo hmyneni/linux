@@ -898,8 +898,10 @@ struct vas_window *vas_rx_win_open(int vasid, enum vas_cop_type cop,
 	rxwin->user_win = rxattr->user_win;
 	rxwin->cop = cop;
 	rxwin->wcreds_max = rxattr->wcreds_max ?: VAS_WCREDS_DEFAULT;
-	if (rxattr->user_win)
+	if (rxattr->user_win) {
 		rxwin->pid = task_pid_vnr(current);
+		rxwin->tgid = task_tgid_vnr(current);
+	}
 
 	init_winctx_for_rxwin(rxwin, rxattr, &winctx);
 	init_winctx_regs(rxwin, &winctx);
@@ -1057,6 +1059,8 @@ struct vas_window *vas_tx_win_open(int vasid, enum vas_cop_type cop,
 	txwin->pid = attr->pid;
 	txwin->user_win = attr->user_win;
 	txwin->wcreds_max = attr->wcreds_max ?: VAS_WCREDS_DEFAULT;
+	if (attr->user_win)
+		txwin->tgid = task_tgid_vnr(current);
 
 	init_winctx_for_txwin(txwin, attr, &winctx);
 
