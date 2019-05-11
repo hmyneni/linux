@@ -36,8 +36,6 @@ void vas_wakeup_fault_handler(int virq, void *arg)
 {
 	struct vas_instance *vinst = arg;
 
-	atomic_inc(&vinst->pending_crbs);
-
 	atomic_inc(&vinst->pending_faults);
 
 	wake_up(&vinst->fault_wq);
@@ -221,36 +219,29 @@ static void process_fault_crb(struct vas_instance *vinst)
 	struct coprocessor_request_block buf;
 	struct coprocessor_request_block *crb;
 
-	if (!atomic_read(&vinst->pending_crbs))
-		return;
-
 	crb = &buf;
 
+	mutex_lock(&vinst->mutex);
 	/*
 	 * Advance the fault fifo pointer to next CRB.
 	 * Use CRB_SIZE rather than sizeof(*crb) since the latter is
 	 * aligned to CRB_ALIGN (256) but the CRB written to by VAS is
 	 * only CRB_SIZE in len.
 	 */
-	fifo = vinst->fault_fifo + atomic_read(&vinst->fault_crbs) * CRB_SIZE;
+	fifo = vinst->fault_fifo + (vinst->fault_crbs * CRB_SIZE);
+	vinst->fault_crbs++;
+	if (vinst->fault_crbs == vinst->fault_fifo_size/CRB_SIZE)
+		vinst->fault_crbs = 0;
+	mutex_unlock(&vinst->mutex);
 
 	pr_devel("VAS[%d] fault_fifo %p, fifo %p, faults %d pending %d\n",
 			vinst->vas_id, vinst->fault_fifo, fifo,
-			atomic_read(&vinst->fault_crbs),
+			vinst->fault_crbs,
 			atomic_read(&vinst->pending_faults));
 
 	memcpy(crb, fifo, CRB_SIZE);
 	memset(fifo, 0, CRB_SIZE);
 
-	/*
-	 * TODO: If we see any race issues, may usse a mutex instead of
-	 * atomic here, since we have to wrap the fault_crbs back to 0.
-	 */
-	atomic_inc(&vinst->fault_crbs);
-	if (atomic_read(&vinst->fault_crbs) == vinst->fault_fifo_size/CRB_SIZE)
-		atomic_set(&vinst->fault_crbs, 0);
-
-	atomic_dec(&vinst->pending_crbs);
 	atomic_dec(&vinst->pending_faults);
 
 	dump_crb(crb);
@@ -268,7 +259,7 @@ static void process_fault_crb(struct vas_instance *vinst)
 		pr_err("VAS[%d] fault_fifo %p, fifo %p, pswid 0x%x faults %d, "
 				"pending %d bad CRB?\n", vinst->vas_id,
 				vinst->fault_fifo, fifo, crb_nx_pswid(crb),
-				atomic_read(&vinst->fault_crbs),
+				vinst->fault_crbs,
 				atomic_read(&vinst->pending_faults));
 
 		WARN_ON_ONCE(1);
