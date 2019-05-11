@@ -321,8 +321,7 @@ struct vas_instance {
 	int hwirq;
 	int fault_fifo_size;
 	void *fault_fifo;
-	atomic_t pending_crbs;
-	atomic_t fault_crbs;
+	int fault_crbs;
 	atomic_t pending_faults;
 
 	wait_queue_head_t fault_wq;
