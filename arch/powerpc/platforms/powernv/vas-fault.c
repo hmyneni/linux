@@ -36,7 +36,7 @@ void vas_wakeup_fault_handler(int virq, void *arg)
 {
 	struct vas_instance *vinst = arg;
 
-	atomic_inc(&vinst->pending_faults);
+	atomic_inc(&vinst->pending_fault);
 
 	wake_up(&vinst->fault_wq);
 }
@@ -210,67 +210,88 @@ static void dump_fifo(struct vas_instance *vinst)
 }
 
 /*
- * Process a CRB that we receive on the fault window.
+ * Process CRBs that we receive on the fault window.
  */
-static void process_fault_crb(struct vas_instance *vinst)
+static void process_fault_crbs(struct vas_instance *vinst)
 {
 	void *fifo;
 	struct vas_window *window;
 	struct coprocessor_request_block buf;
 	struct coprocessor_request_block *crb;
+	u64 csb_addr;
 
 	crb = &buf;
 
-	mutex_lock(&vinst->mutex);
 	/*
-	 * Advance the fault fifo pointer to next CRB.
-	 * Use CRB_SIZE rather than sizeof(*crb) since the latter is
-	 * aligned to CRB_ALIGN (256) but the CRB written to by VAS is
-	 * only CRB_SIZE in len.
+	 * VAS can interrupt with multiple page faults. So process all
+	 * valid CRBs within fault FIFO until reaches invalid CRB.
+	 * For valid CRBs, csb_addr should be valid address points to CSB
+	 * section within CRB. After reading CRB entry, it is reset with
+	 * 0's in fault FIFO.
+	 *
+	 * In case kernel receives another interrupt with different page
+	 * fault and is processed by the previous handling, will be returned
+	 * from this function when it sees invalid CRB (means 0's). 
 	 */
-	fifo = vinst->fault_fifo + (vinst->fault_crbs * CRB_SIZE);
-	vinst->fault_crbs++;
-	if (vinst->fault_crbs == vinst->fault_fifo_size/CRB_SIZE)
-		vinst->fault_crbs = 0;
-	mutex_unlock(&vinst->mutex);
-
-	pr_devel("VAS[%d] fault_fifo %p, fifo %p, faults %d pending %d\n",
-			vinst->vas_id, vinst->fault_fifo, fifo,
-			vinst->fault_crbs,
-			atomic_read(&vinst->pending_faults));
-
-	memcpy(crb, fifo, CRB_SIZE);
-	memset(fifo, 0, CRB_SIZE);
-
-	atomic_dec(&vinst->pending_faults);
-
-	dump_crb(crb);
-
-	window = vas_pswid_to_window(vinst, crb_nx_pswid(crb));
-
-	if (IS_ERR(window)) {
+	do {
+		mutex_lock(&vinst->mutex);
 		/*
-		 * What now? We got an interrupt about a specific send
-		 * window but we can't find that window and we can't
-		 * even clean it up (return credit).
-		 * But we should not get here.
+		 * Advance the fault fifo pointer to next CRB.
+		 * Use CRB_SIZE rather than sizeof(*crb) since the latter is
+		 * aligned to CRB_ALIGN (256) but the CRB written to by VAS is
+		 * only CRB_SIZE in len.
 		 */
-		dump_fifo(vinst);
-		pr_err("VAS[%d] fault_fifo %p, fifo %p, pswid 0x%x faults %d, "
-				"pending %d bad CRB?\n", vinst->vas_id,
+		fifo = vinst->fault_fifo + (vinst->fault_crbs * CRB_SIZE);
+		csb_addr = ((struct coprocessor_request_block *)fifo)->csb_addr;
+
+		/*
+		 * Return if reached invalid CRB.
+		 */
+		if (!csb_addr) {
+			mutex_unlock(&vinst->mutex);
+			return;
+		}
+
+		vinst->fault_crbs++;
+		if (vinst->fault_crbs == vinst->fault_fifo_size/CRB_SIZE)
+			vinst->fault_crbs = 0;
+
+		memcpy(crb, fifo, CRB_SIZE);
+		memset(fifo, 0, CRB_SIZE);
+		mutex_unlock(&vinst->mutex);
+
+		pr_devel("VAS[%d] fault_fifo %p, fifo %p, fault_crbs %d "
+			"pending %d\n", vinst->vas_id,
+			vinst->fault_fifo, fifo, vinst->fault_crbs,
+			atomic_read(&vinst->pending_fault));
+
+		dump_crb(crb);
+
+		window = vas_pswid_to_window(vinst, crb_nx_pswid(crb));
+
+		if (IS_ERR(window)) {
+			/*
+			 * What now? We got an interrupt about a specific send
+			 * window but we can't find that window and we can't
+			 * even clean it up (return credit).
+			 * But we should not get here.
+			 */
+			dump_fifo(vinst);
+			pr_err("VAS[%d] fault_fifo %p, fifo %p, pswid 0x%x, "
+				"fault_crbs %d, pending %d bad CRB?\n",
+				vinst->vas_id,
 				vinst->fault_fifo, fifo, crb_nx_pswid(crb),
 				vinst->fault_crbs,
-				atomic_read(&vinst->pending_faults));
+				atomic_read(&vinst->pending_fault));
 
-		WARN_ON_ONCE(1);
-		return;
-	}
+			WARN_ON_ONCE(1);
+			return;
+		}
 
-	update_csb(window, crb);
+		update_csb(window, crb);
 
-	vas_return_credit(window, true);
-
-	return;
+		vas_return_credit(window, true);
+	} while (true);
 }
 
 /*
@@ -287,13 +308,14 @@ static int fault_handler_func(void *arg)
 			flush_signals(current);
 
 		wait_event_interruptible(vinst->fault_wq,
-				atomic_read(&vinst->pending_faults) ||
+				atomic_read(&vinst->pending_fault) ||
 				kthread_should_stop());
 
 		if (kthread_should_stop())
 			break;
 
-		process_fault_crb(vinst);
+		atomic_dec(&vinst->pending_fault);
+		process_fault_crbs(vinst);
 
 	} while (!kthread_should_stop());
 
@@ -394,7 +416,7 @@ int vas_setup_fault_window(struct vas_instance *vinst)
 	struct vas_rx_win_attr attr;
 
 	vinst->fault_fifo_size = VAS_FAULT_WIN_FIFO_SIZE;
-	vinst->fault_fifo = kmalloc(vinst->fault_fifo_size, GFP_KERNEL);
+	vinst->fault_fifo = kzalloc(vinst->fault_fifo_size, GFP_KERNEL);
 	if (!vinst->fault_fifo) {
 		pr_err("Unable to alloc %d bytes for fault_fifo\n",
 				vinst->fault_fifo_size);
