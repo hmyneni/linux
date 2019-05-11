@@ -322,7 +322,7 @@ struct vas_instance {
 	int fault_fifo_size;
 	void *fault_fifo;
 	int fault_crbs;
-	atomic_t pending_faults;
+	atomic_t pending_fault;
 
 	wait_queue_head_t fault_wq;
 	struct task_struct *fault_handler;
