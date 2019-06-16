@@ -25,10 +25,12 @@
 #include "vas.h"
 
 /*
- * TODO: These need tuning
+ * The maximum FIFO size for fault window can be 8MB
+ * (VAS_RX_FIFO_SIZE_MAX). Using 4MB, but can be changed
+ * if expect more faults for NX instance.
+ * Note: Using fault window for each VAS instance.
  */
-#define VAS_FAULT_WIN_FIFO_SIZE		(64 << 10)
-#define VAS_FAULT_WIN_WCREDS		64
+#define VAS_FAULT_WIN_FIFO_SIZE		(4 << 20)
 
 struct task_struct *fault_handler;
 
@@ -427,7 +429,12 @@ int vas_setup_fault_window(struct vas_instance *vinst)
 	attr.rx_fifo_size = vinst->fault_fifo_size;
 	attr.rx_fifo = vinst->fault_fifo;
 
-	attr.wcreds_max = VAS_FAULT_WIN_WCREDS;
+	/*
+	 * Max creds is based on number of CRBs can fit in the FIFO.
+	 * If 8MB FIFO is used, max creds will be 0xffff since the receive
+	 * creds field is 16bits wide.
+	 */
+	attr.wcreds_max = vinst->fault_fifo_size / CRB_SIZE;
 	attr.tc_mode = VAS_THRESH_DISABLED;
 	attr.pin_win = true;
 	attr.tx_win_ord_mode = true;
