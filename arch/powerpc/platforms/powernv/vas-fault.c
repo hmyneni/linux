@@ -260,6 +260,10 @@ static void process_fault_crbs(struct vas_instance *vinst)
 
 		memcpy(crb, fifo, CRB_SIZE);
 		memset(fifo, 0, CRB_SIZE);
+		/*
+		 * Return credit for the fault window.
+		 */
+		vas_return_credit(vinst->fault_win, 0);
 		mutex_unlock(&vinst->mutex);
 
 		pr_devel("VAS[%d] fault_fifo %p, fifo %p, fault_crbs %d "
@@ -437,7 +441,8 @@ int vas_setup_fault_window(struct vas_instance *vinst)
 	attr.wcreds_max = vinst->fault_fifo_size / CRB_SIZE;
 	attr.tc_mode = VAS_THRESH_DISABLED;
 	attr.pin_win = true;
-	attr.tx_win_ord_mode = true;
+	attr.rx_wcred_mode = true;
+	attr.rej_no_credit = true;
 	attr.rx_win_ord_mode = true;
 	attr.fault_win = true;
 
