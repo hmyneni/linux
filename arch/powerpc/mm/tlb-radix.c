@@ -39,10 +39,12 @@ static inline void __tlbie_va(unsigned long va, unsigned long pid,
 	trace_tlbie(0, 0, rb, rs, ric, prs, r);
 }
 
-static inline void fixup_tlbie(void)
+static inline void fixup_tlbie_pid(unsigned long pid)
 {
-	unsigned long pid = 0;
 	unsigned long va = ((1UL << 52) - 1);
+
+	if (pid == 0)
+		va |= PAGE_OFFSET;
 
 	if (cpu_has_feature(CPU_FTR_P9_TLBIE_BUG)) {
 		asm volatile("ptesync": : :"memory");
@@ -55,7 +57,11 @@ static inline void _tlbie_va(unsigned long va, unsigned long pid,
 {
 	asm volatile("ptesync": : :"memory");
 	__tlbie_va(va, pid, ap, ric);
-	fixup_tlbie();
+
+	if (cpu_has_feature(CPU_FTR_P9_TLBIE_BUG)) {
+		asm volatile("ptesync": : :"memory");
+		__tlbie_va(va, pid, ap, RIC_FLUSH_TLB);
+	}
 	asm volatile("eieio; tlbsync; ptesync": : :"memory");
 }
 
@@ -116,7 +122,7 @@ static inline void _tlbie_pid(unsigned long pid, unsigned long ric)
 	asm volatile("ptesync": : :"memory");
 	asm volatile(PPC_TLBIE_5(%0, %4, %3, %2, %1)
 		     : : "r"(rb), "i"(r), "i"(prs), "i"(ric), "r"(rs) : "memory");
-	fixup_tlbie();
+	fixup_tlbie_pid(pid);
 	asm volatile("eieio; tlbsync; ptesync": : :"memory");
 	trace_tlbie(0, 0, rb, rs, ric, prs, r);
 }
