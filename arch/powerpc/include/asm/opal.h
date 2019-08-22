@@ -283,6 +283,7 @@ int opal_set_powercap(u32 handle, int token, u32 pcap);
 int opal_get_power_shift_ratio(u32 handle, int token, u32 *psr);
 int opal_set_power_shift_ratio(u32 handle, int token, u32 psr);
 int opal_sensor_group_clear(u32 group_hndl, int token);
+int opal_nx_coproc_init(uint32_t chip_id, uint32_t ct);
 
 /* Internal functions */
 extern int early_init_dt_scan_opal(unsigned long node, const char *uname,
