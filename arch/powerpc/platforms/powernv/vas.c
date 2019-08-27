@@ -29,7 +29,8 @@ static DEFINE_PER_CPU(int, cpu_vas_id);
 
 static int init_vas_instance(struct platform_device *pdev)
 {
-	int rc, cpu, vasid;
+	int rc, cpu, vasid, irq;
+	uint64_t port;
 	struct resource *res;
 	struct vas_instance *vinst;
 	struct device_node *dn = pdev->dev.of_node;
@@ -37,6 +38,18 @@ static int init_vas_instance(struct platform_device *pdev)
 	rc = of_property_read_u32(dn, "ibm,vas-id", &vasid);
 	if (rc) {
 		pr_err("No ibm,vas-id property for %s?\n", pdev->name);
+		return -ENODEV;
+	}
+
+	rc = of_property_read_u32(dn, "ibm,vas-irq", &irq);
+	if (rc) {
+		pr_err("No ibm,vas-irq property for %s?\n", pdev->name);
+		return -ENODEV;
+	}
+
+	rc = of_property_read_u64(dn, "ibm,vas-port", &port);
+	if (rc) {
+		pr_err("No ibm,vas-port property for %s?\n", pdev->name);
 		return -ENODEV;
 	}
 
@@ -54,6 +67,8 @@ static int init_vas_instance(struct platform_device *pdev)
 	ida_init(&vinst->ida);
 	mutex_init(&vinst->mutex);
 	vinst->vas_id = vasid;
+	vinst->hwirq = irq;
+	vinst->irq_port = port;
 	vinst->pdev = pdev;
 
 	res = &pdev->resource[0];
@@ -75,8 +90,10 @@ static int init_vas_instance(struct platform_device *pdev)
 	init_waitqueue_head(&vinst->fault_wq);
 
 	pr_devel("Initialized instance [%s, %d], paste_base 0x%llx, "
-			"paste_win_id_shift 0x%llx\n", pdev->name, vasid,
-			vinst->paste_base_addr, vinst->paste_win_id_shift);
+			"paste_win_id_shift 0x%llx IRQ %d Port 0x%llx\n",
+			pdev->name, vasid, vinst->paste_base_addr,
+			vinst->paste_win_id_shift, vinst->hwirq,
+			vinst->irq_port);
 
 	for_each_possible_cpu(cpu) {
 		if (cpu_to_chip_id(cpu) == of_get_ibm_chip_id(dn))

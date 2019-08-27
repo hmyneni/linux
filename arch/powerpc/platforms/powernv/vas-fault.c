@@ -356,29 +356,14 @@ int vas_setup_irq_mapping(struct vas_instance *vinst)
 {
 	int rc;
 	uint32_t virq;
-	int32_t girq_be, girq;
-	uint64_t port_be, port;
 	char devname[64];
-
-	if (!opal_check_token(OPAL_VAS_GET_TRIGGER_PORT))
-		return -ENODEV;
 
 	snprintf(devname, sizeof(devname), "vas-inst-%d", vinst->vas_id);
 
-	girq = 0;
-	port = 0ULL;
-	rc = opal_vas_get_trigger_port(vinst->vas_id, &girq_be, &port_be);
-	if (rc)
-		return -EINVAL;
-
-	pr_devel("IRQ trigger %d, port 0x%llx, rc %d\n", girq, port, rc);
-	girq = be32_to_cpu(girq_be);
-	port = be64_to_cpu(port_be);
-
-	virq = irq_create_mapping(NULL, girq);
+	virq = irq_create_mapping(NULL, vinst->hwirq);
 	if (!virq) {
 		pr_err("Inst%d: Unable to map global irq %d\n",
-			vinst->vas_id, girq);
+			vinst->vas_id, vinst->hwirq);
 		return -EINVAL;
 	}
 
@@ -388,9 +373,6 @@ int vas_setup_irq_mapping(struct vas_instance *vinst)
 			vinst->vas_id, rc);
 		return rc;
 	}
-
-	vinst->hwirq = girq;
-	vinst->irq_port = port;
 
 	return 0;
 }
