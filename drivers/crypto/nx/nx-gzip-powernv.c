@@ -202,6 +202,7 @@ static int nx_ioc_gzip_tx_win_open(struct file *fp, unsigned long arg)
 static int nxgzip_release(struct inode *inode, struct file *fp)
 {
 	struct nxgzip_instance *instance;
+	struct mm_struct *mm = current->mm;
 
 	instance = fp->private_data;
 
@@ -209,7 +210,15 @@ static int nxgzip_release(struct inode *inode, struct file *fp)
 		vas_win_close(instance->txwin);
 		instance->txwin = NULL;
 
-		if (current->mm)
+		/*
+		 * execv system call deletes old mm context and initializes
+		 * new mm. In this process, new context is initialized
+		 * before old windows are closed. No need to flush TLBs when
+		 * old mm is not available. Call mm_context_remove_copro()
+		 * only if copros count is non-zero to avoid warn_on
+		 * message.
+		 */
+		if (mm && (atomic_read(&current->mm->context.copros) > 0))
 			mm_context_remove_copro(current->mm);
 	}
 
