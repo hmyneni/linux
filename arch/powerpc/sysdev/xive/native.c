@@ -282,6 +282,29 @@ u32 xive_native_alloc_irq_on_chip(u32 chip_id)
 }
 EXPORT_SYMBOL_GPL(xive_native_alloc_irq_on_chip);
 
+int xive_native_alloc_get_irq_info(u32 chip_id, u32 *irq, u64 *trigger_addr)
+{
+	__be64 flags, trigger_page;
+	u32 hwirq;
+	s64 rc;
+
+	hwirq = xive_native_alloc_irq_on_chip(chip_id);
+	if (!hwirq)
+		return -ENOENT;
+
+	rc = opal_xive_get_irq_info(hwirq, &flags, NULL, &trigger_page, NULL,
+				NULL);
+	if (rc || !trigger_page) {
+		xive_native_free_irq(hwirq);
+		return -ENOENT;
+	}
+	*irq = hwirq;
+	*trigger_addr = be64_to_cpu(trigger_page);
+
+	return 0;
+}
+EXPORT_SYMBOL(xive_native_alloc_get_irq_info);
+
 void xive_native_free_irq(u32 irq)
 {
 	for (;;) {
