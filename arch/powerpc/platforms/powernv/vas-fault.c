@@ -11,6 +11,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/kthread.h>
+#include <linux/mmu_context.h>
 #include <asm/icswx.h>
 
 #include "vas.h"
@@ -23,6 +24,90 @@
  * instance.
  */
 #define VAS_FAULT_WIN_FIFO_SIZE	(4 << 20)
+
+/*
+ * Process CRBs that we receive on the fault window.
+ */
+irqreturn_t vas_fault_handler(int irq, void *data)
+{
+	struct vas_instance *vinst = data;
+	struct coprocessor_request_block buf, *crb;
+	struct vas_window *window;
+	void *fifo;
+
+	/*
+	 * VAS can interrupt with multiple page faults. So process all
+	 * valid CRBs within fault FIFO until reaches invalid CRB.
+	 * NX updates nx_fault_stamp in CRB and pastes in fault FIFO.
+	 * kernel retrives send window from parition send window ID
+	 * (pswid) in nx_fault_stamp. So pswid should be non-zero and
+	 * use this to check whether CRB is valid.
+	 * After reading CRB entry, it is reset with 0's in fault FIFO.
+	 *
+	 * In case kernel receives another interrupt with different page
+	 * fault and CRBs are processed by the previous handling, will be
+	 * returned from this function when it sees invalid CRB (means 0's).
+	 */
+	do {
+		mutex_lock(&vinst->mutex);
+
+		/*
+		 * Advance the fault fifo pointer to next CRB.
+		 * Use CRB_SIZE rather than sizeof(*crb) since the latter is
+		 * aligned to CRB_ALIGN (256) but the CRB written to by VAS is
+		 * only CRB_SIZE in len.
+		 */
+		fifo = vinst->fault_fifo + (vinst->fault_crbs * CRB_SIZE);
+		crb = fifo;
+
+		/*
+		 * NX pastes nx_fault_stamp in fault FIFO for each fault.
+		 * So use pswid to check whether fault CRB is valid.
+		 * pswid returned from NX will be in _be32, but just
+		 * checking non-zero value to make sure the CRB is valid.
+		 * Return if reached invalid CRB.
+		 */
+		if (!crb->stamp.nx.pswid) {
+			mutex_unlock(&vinst->mutex);
+			return IRQ_HANDLED;
+		}
+
+		vinst->fault_crbs++;
+		if (vinst->fault_crbs == (vinst->fault_fifo_size / CRB_SIZE))
+			vinst->fault_crbs = 0;
+
+		crb = &buf;
+		memcpy(crb, fifo, CRB_SIZE);
+		memset(fifo, 0, CRB_SIZE);
+		mutex_unlock(&vinst->mutex);
+
+		pr_devel("VAS[%d] fault_fifo %p, fifo %p, fault_crbs %d\n",
+				vinst->vas_id, vinst->fault_fifo, fifo,
+				vinst->fault_crbs);
+
+		window = vas_pswid_to_window(vinst,
+				be32_to_cpu(crb->stamp.nx.pswid));
+
+		if (IS_ERR(window)) {
+			/*
+			 * We got an interrupt about a specific send
+			 * window but we can't find that window and we can't
+			 * even clean it up (return credit).
+			 * But we should not get here.
+			 */
+			pr_err("VAS[%d] fault_fifo %p, fifo %p, pswid 0x%x, fault_crbs %d bad CRB?\n",
+				vinst->vas_id, vinst->fault_fifo, fifo,
+				be32_to_cpu(crb->stamp.nx.pswid),
+				vinst->fault_crbs);
+
+			WARN_ON_ONCE(1);
+			return IRQ_HANDLED;
+		}
+
+	} while (true);
+
+	return IRQ_HANDLED;
+}
 
 /*
  * Fault window is opened per VAS instance. NX pastes fault CRB in fault
