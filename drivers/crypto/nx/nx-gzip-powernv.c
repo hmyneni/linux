@@ -174,7 +174,6 @@ static int nx_ioc_gzip_tx_win_open(struct file *fp, unsigned long arg)
 
 	txattr.lpid = mfspr(SPRN_LPID);
 	txattr.pidr = mfspr(SPRN_PID);
-	txattr.pid = task_pid_nr(current);
 	txattr.user_win = true;
 	txattr.rsvd_txbuf_count = false;
 	txattr.tc_mode = uattr.tc_mode;
