@@ -30,6 +30,7 @@
 #include <asm/switch_to.h>
 #include <asm/prom.h>
 #include <asm/vas.h>
+#include <asm/icswx.h>
 #include <asm/reg.h>
 #include <asm/opal-api.h>
 #include <asm/opal.h>
@@ -41,9 +42,6 @@ MODULE_AUTHOR("Haren Myneni <haren@us.ibm.com>");
 MODULE_DESCRIPTION("gzip H/W Compression driver for IBM PowerNV processors");
 MODULE_ALIAS_CRYPTO("gzip");
 MODULE_ALIAS_CRYPTO("gzip-nx");
-
-/* # of requests allowed per RxFIFO at a time. 0 for unlimited */
-#define MAX_CREDITS_PER_RXFIFO	(1024)
 
 struct nxgzip_coproc {
 	unsigned int chip_id;
@@ -421,7 +419,11 @@ static int __init vas_cfg_coproc_info(struct device_node *dn, int chip_id,
 	rxattr.lnotify_lpid = lpid;
 	rxattr.lnotify_pid = pid;
 	rxattr.lnotify_tid = tid;
-	rxattr.wcreds_max = MAX_CREDITS_PER_RXFIFO;
+	/*
+	 * Maximum RX window credits can not be more than #CRBs in
+	 * RxFIFO. Otherwise, can get checkstop if RxFIFO overruns.
+	 */
+	rxattr.wcreds_max = fifo_size / CRB_SIZE;
 
 	/*
 	 * Open a VAS receice window which is used to configure RxFIFO
