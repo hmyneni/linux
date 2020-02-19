@@ -30,14 +30,23 @@ static LIST_HEAD(vas_instances);
 
 static DEFINE_PER_CPU(int, cpu_vas_id);
 
+static irqreturn_t vas_irq_handler(int virq, void *data)
+{
+	struct vas_instance *vinst = data;
+
+	pr_devel("VAS %d: virq %d\n", vinst->vas_id, virq);
+	vas_wakeup_fault_handler(virq, data);
+
+	return IRQ_HANDLED;
+}
+
 static int vas_irq_fault_window_setup(struct vas_instance *vinst)
 {
 	char devname[64];
 	int rc = 0;
 
-	snprintf(devname, sizeof(devname), "vas-%d", vinst->vas_id);
-	rc = request_threaded_irq(vinst->virq, NULL, vas_fault_handler,
-					IRQF_ONESHOT, devname, vinst);
+	snprintf(devname, sizeof(devname), "vas-inst-%d", vinst->vas_id);
+	rc = request_irq(vinst->virq, vas_irq_handler, 0, devname, vinst);
 	if (rc) {
 		pr_err("VAS[%d]: Request IRQ(%d) failed with %d\n",
 				vinst->vas_id, vinst->virq, rc);
@@ -45,6 +54,10 @@ static int vas_irq_fault_window_setup(struct vas_instance *vinst)
 	}
 
 	rc = vas_setup_fault_window(vinst);
+
+	if (!rc)
+		rc = vas_setup_fault_handler(vinst);
+
 	if (rc)
 		free_irq(vinst->virq, vinst);
 
@@ -118,6 +131,8 @@ static int init_vas_instance(struct platform_device *pdev)
 	}
 
 	vinst->irq_port = port;
+
+	init_waitqueue_head(&vinst->fault_wq);
 	pr_devel("Initialized instance [%s, %d] paste_base 0x%llx paste_win_id_shift 0x%llx IRQ %d Port 0x%llx\n",
 			pdev->name, vasid, vinst->paste_base_addr,
 			vinst->paste_win_id_shift, vinst->virq,

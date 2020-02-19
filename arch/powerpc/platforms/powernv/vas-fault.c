@@ -11,6 +11,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/kthread.h>
+#include <linux/irqdomain.h>
+#include <linux/interrupt.h>
 #include <linux/sched/signal.h>
 #include <linux/mmu_context.h>
 #include <asm/icswx.h>
@@ -25,6 +27,14 @@
  * instance.
  */
 #define VAS_FAULT_WIN_FIFO_SIZE	(4 << 20)
+
+void vas_wakeup_fault_handler(int virq, void *arg)
+{
+	struct vas_instance *vinst = arg;
+
+	atomic_inc(&vinst->pending_fault);
+	wake_up(&vinst->fault_wq);
+}
 
 static void dump_crb(struct coprocessor_request_block *crb)
 {
@@ -182,10 +192,10 @@ static void dump_fifo(struct vas_instance *vinst, void *entry)
 /*
  * Process CRBs that we receive on the fault window.
  */
-irqreturn_t vas_fault_handler(int irq, void *data)
+static void process_fault_crbs(struct vas_instance *vinst)
 {
-	struct vas_instance *vinst = data;
-	struct coprocessor_request_block buf, *crb;
+	struct coprocessor_request_block buf;
+	struct coprocessor_request_block *crb;
 	struct vas_window *window;
 	void *fifo;
 
@@ -223,7 +233,7 @@ irqreturn_t vas_fault_handler(int irq, void *data)
 		 */
 		if (!crb->stamp.nx.pswid) {
 			mutex_unlock(&vinst->mutex);
-			return IRQ_HANDLED;
+			return;
 		}
 
 		vinst->fault_crbs++;
@@ -233,12 +243,11 @@ irqreturn_t vas_fault_handler(int irq, void *data)
 		crb = &buf;
 		memcpy(crb, fifo, CRB_SIZE);
 		memset(fifo, 0, CRB_SIZE);
-		mutex_unlock(&vinst->mutex);
-
 		/*
 		 * Return credit for the fault window.
 		 */
 		vas_return_credit(vinst->fault_win, 0);
+		mutex_unlock(&vinst->mutex);
 
 		pr_devel("VAS[%d] fault_fifo %p, fifo %p, fault_crbs %d\n",
 				vinst->vas_id, vinst->fault_fifo, fifo,
@@ -262,7 +271,7 @@ irqreturn_t vas_fault_handler(int irq, void *data)
 				vinst->fault_crbs);
 
 			WARN_ON_ONCE(1);
-			return IRQ_HANDLED;
+			return;
 		}
 
 		update_csb(window, crb);
@@ -273,7 +282,48 @@ irqreturn_t vas_fault_handler(int irq, void *data)
 		vas_return_credit(window, 1);
 	} while (true);
 
-	return IRQ_HANDLED;
+}
+
+/*
+ * VAS Fault handler thread. One thread for all instances of VAS.
+ *
+ * Process CRBs posted on any instance of VAS.
+ */
+static int fault_handler_func(void *arg)
+{
+	struct vas_instance *vinst = (struct vas_instance *)arg;
+
+	do {
+		if (signal_pending(current))
+			flush_signals(current);
+
+		wait_event_interruptible(vinst->fault_wq,
+					atomic_read(&vinst->pending_fault) ||
+					kthread_should_stop());
+
+		if (kthread_should_stop())
+			break;
+
+		atomic_dec(&vinst->pending_fault);
+		process_fault_crbs(vinst);
+
+	} while (!kthread_should_stop());
+
+	return 0;
+}
+
+/*
+ * Create a thread that processes the fault CRBs.
+ */
+int vas_setup_fault_handler(struct vas_instance *vinst)
+{
+	vinst->fault_handler = kthread_run(fault_handler_func, (void *)vinst,
+				"vas%u-irq%u", vinst->vas_id, vinst->virq);
+
+	if (IS_ERR(vinst->fault_handler))
+		return PTR_ERR(vinst->fault_handler);
+
+	return 0;
 }
 
 /*
