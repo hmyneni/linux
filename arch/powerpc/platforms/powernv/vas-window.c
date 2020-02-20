@@ -1250,15 +1250,15 @@ retry:
 	if (creds < window->wcreds_max) {
 		val = 0;
 		set_current_state(TASK_UNINTERRUPTIBLE);
-		schedule_timeout(msecs_to_jiffies(10));
+		schedule_timeout(msecs_to_jiffies(5));
 		count++;
 		/*
 		 * Process can not close send window until all credits are
 		 * returned.
 		 */
 		if (!(count % 10000))
-			pr_debug("%s() pid %d stuck? retries %d\n", __func__,
-				vas_window_pid(window), count);
+			pr_err("VAS: pid %d stuck. Waiting for credits returned for Window(%d). Retries %d\n",
+				vas_window_pid(window), window->winid, count);
 
 		goto retry;
 	}
@@ -1284,12 +1284,13 @@ retry:
 		schedule_timeout(msecs_to_jiffies(5));
 		count++;
 		/*
-		 * Takes around 5 microseconds to process all pending
+		 * Takes around few milliseconds to process all pending
 		 * requests.
 		 */
 		if (!(count % 10000))
-			pr_debug("%s() pid %d stuck? retries %d\n", __func__,
-				vas_window_pid(window), count);
+			pr_err("VAS: pid %d stuck. Window (ID=%d) is in busy state. Retries %d\n",
+				vas_window_pid(window), window->winid, count);
+
 
 		goto retry;
 	}

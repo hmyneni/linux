@@ -148,8 +148,9 @@ static void update_csb(struct vas_window *window,
 	if (!rc)
 		return;
 
-	pr_err("Invalid CSB address 0x%p signalling pid(%d)\n",
-			csb_addr, pid_vnr(pid));
+	pr_err("VAS: Invalid CSB address 0x%p signalling pid(%d). Window pid= %d, tgid = %d, window ID = %d\n",
+			csb_addr, pid_vnr(pid), vas_window_pid(window),
+			pid_vnr(window->tgid), window->winid);
 
 	memset(&info, 0, sizeof(info));
 	info.si_signo = SIGSEGV;
