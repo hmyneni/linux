@@ -296,6 +296,9 @@ enum vas_notify_after_count {
 	VAS_NOTIFY_AFTER_2
 };
 
+#define FIFO_ENTRY_INVALID 0xDEDEDEDE
+#define CSB_ADDR_INVALID 0xDEDEDEDEDEDEDEDE
+
 /*
  * One per instance of VAS. Each instance will have a separate set of
  * receive windows, one per coprocessor type.

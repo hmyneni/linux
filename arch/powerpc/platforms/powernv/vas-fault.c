@@ -195,10 +195,11 @@ static void dump_fifo(struct vas_instance *vinst, void *entry)
 static void process_fault_crbs(struct vas_instance *vinst)
 {
 	struct coprocessor_request_block buf;
-	struct coprocessor_request_block *crb;
+	struct coprocessor_request_block *crb, *entry;
 	struct vas_window *window;
 	void *fifo;
 
+	crb = &buf;
 	/*
 	 * VAS can interrupt with multiple page faults. So process all
 	 * valid CRBs within fault FIFO until reaches invalid CRB.
@@ -222,16 +223,17 @@ static void process_fault_crbs(struct vas_instance *vinst)
 		 * only CRB_SIZE in len.
 		 */
 		fifo = vinst->fault_fifo + (vinst->fault_crbs * CRB_SIZE);
-		crb = fifo;
+		entry = fifo;
 
 		/*
 		 * NX pastes nx_fault_stamp in fault FIFO for each fault.
 		 * So use pswid to check whether fault CRB is valid.
-		 * pswid returned from NX will be in _be32, but just
-		 * checking non-zero value to make sure the CRB is valid.
+		 * Also use csb_addr tio make overcome FIFO race between
+		 * NX and kernel.
 		 * Return if reached invalid CRB.
 		 */
-		if (!crb->stamp.nx.pswid) {
+		if (entry->stamp.nx.pswid == FIFO_ENTRY_INVALID ||
+				entry->csb_addr == CSB_ADDR_INVALID) {
 			mutex_unlock(&vinst->mutex);
 			return;
 		}
@@ -240,9 +242,12 @@ static void process_fault_crbs(struct vas_instance *vinst)
 		if (vinst->fault_crbs == (vinst->fault_fifo_size / CRB_SIZE))
 			vinst->fault_crbs = 0;
 
-		crb = &buf;
 		memcpy(crb, fifo, CRB_SIZE);
-		memset(fifo, 0, CRB_SIZE);
+		/*
+		 * Invalidate this entry in fault FIFO
+		 */
+		entry->stamp.nx.pswid = FIFO_ENTRY_INVALID;
+		entry->csb_addr = CSB_ADDR_INVALID;
 		/*
 		 * Return credit for the fault window.
 		 */
@@ -342,6 +347,14 @@ int vas_setup_fault_window(struct vas_instance *vinst)
 		return -ENOMEM;
 	}
 
+	/*
+	 * Invalidate all CRB entries initially. If NX generates continuous
+	 * faults, VAS handling thread may continue reading entries while
+	 * NX paste entries in to fault FIFO. We use only pswid and csb_addr
+	 * to process fault CRB. So to overcome any race issue between NX
+	 * and kernel, work-around is to invalidate with 0xff.
+	 */
+	memset(vinst->fault_fifo, FIFO_ENTRY_INVALID, vinst->fault_fifo_size);
 	vas_init_rx_win_attr(&attr, VAS_COP_TYPE_FAULT);
 
 	attr.rx_fifo_size = vinst->fault_fifo_size;
